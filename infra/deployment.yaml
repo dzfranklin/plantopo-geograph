@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: geograph
+  namespace: pt
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: geograph
+  template:
+    metadata:
+      labels:
+        app: geograph
+    spec:
+      volumes:
+        - name: data
+          emptyDir: {}
+      initContainers:
+        - name: pull-meta
+          image: ubuntu:22.04
+          command:
+            - "sh"
+            - "-c"
+            - "apt update && apt install -y --no-install-recommends ca-certificates curl tar && curl https://minio.dfranklin.dev/geograph/meta.tar --fail -o meta.tar && tar xf meta.tar --directory=/data && rm meta.tar"
+          volumeMounts:
+            - mountPath: /data
+              name: data
+      containers:
+        - name: api
+          image: ghcr.io/dzfranklin/plantopo-geograph:latest
+          ports:
+            - name: http
+              containerPort: 8080
+          livenessProbe:
+            httpGet:
+              path: /status
+              port: http
+          volumeMounts:
+            - mountPath: /data
+              name: data
+          env:
+            - name: IMAGE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: geograph
+                  key: image_secret
+            - name: HOST
+              value: geograph.plantopo.com
+            - name: META_DIR
+              value: /data
