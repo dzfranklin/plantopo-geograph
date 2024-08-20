@@ -9,6 +9,7 @@ if [[ ! -d "./source" ]]; then
   wget "http://data.geograph.org.uk/dumps/gridimage_geo.mysql.gz"
   wget "http://data.geograph.org.uk/dumps/gridimage_size.mysql.gz"
   wget "http://data.geograph.org.uk/dumps/gridimage_text.mysql.gz"
+  wget "http://data.geograph.org.uk/dumps/gridimage_tag.mysql.gz"
   date -u '+%Y-%m-%d' > downloaded_at.txt
   popd
 else
@@ -47,9 +48,8 @@ done
 
 docker exec gg-import sh -c "mysql -u root -e 'ALTER DATABASE geograph CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci'"
 
-go run . --sample --out ../sample.tar
-echo "---"
-go run . --out ./out/meta.tar
+exit 1
+go run .
 
 docker stop gg-import
 docker rm gg-import

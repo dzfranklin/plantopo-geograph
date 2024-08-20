@@ -1,0 +1,3 @@
+The overhead of small files is killing me.
+
+We could focus a little. We want to be able to quickly serve an image with attribution for an arbitrary location.

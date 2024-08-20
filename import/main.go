@@ -1,19 +1,15 @@
 package main
 
 import (
-	"archive/tar"
+	"compress/gzip"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
-	"fmt"
-	geograph "github.com/dzfranklin/plantopo-geograph"
 	"github.com/go-sql-driver/mysql"
 	"github.com/twpayne/go-proj/v10"
-	"github.com/valyala/gozstd"
 	"log"
 	"math"
-	"math/rand"
 	"os"
 	"time"
 	"unicode/utf8"
@@ -22,8 +18,6 @@ import (
 var srcDb *sql.DB
 
 func main() {
-	onlyWriteSample := flag.Bool("sample", false, "Only write a sample of the data")
-	outPath := flag.String("out", "./out/meta.tar", "File to write output to")
 	flag.Parse()
 
 	dbCfg := mysql.Config{
@@ -41,119 +35,58 @@ func main() {
 		panic(err)
 	}
 
-	log.Println("Building dictionary")
+	if err := os.Mkdir("./out", 0750); err != nil && !errors.Is(err, os.ErrExist) {
+		panic(err)
+	}
+
+	outF, err := os.Create("./out/meta.ndjson.gz")
+	if err != nil {
+		panic(err)
+	}
+	outW, err := gzip.NewWriterLevel(outF, gzip.BestCompression)
+	if err != nil {
+		panic(err)
+	}
+
+	log.Println("Scanning")
 
 	i := 0
-	var samples [][]byte
-	scanRows(true, func(_ metaData, row []byte) {
-		samples = append(samples, row)
-		i++
-		if i%1000 == 0 {
-			fmt.Println("Sampled", i)
+	scanRows(func(row []byte) {
+		if _, err := outW.Write(row); err != nil {
+			panic(err)
 		}
-	})
-	log.Println("Took", i, "samples for dictionary")
-
-	dict := gozstd.BuildDict(samples, 100*1024)
-	log.Println("Built dictionary:", len(dict)/1024, "KiB")
-
-	log.Println("Exporting")
-
-	if err := os.RemoveAll("./out"); err != nil && !errors.Is(err, os.ErrNotExist) {
-		panic(err)
-	}
-	if err := os.Mkdir("./out", 0750); err != nil {
-		panic(err)
-	}
-
-	outContainer, err := os.Create(*outPath)
-	if err != nil {
-		panic(err)
-	}
-	out := tar.NewWriter(outContainer)
-
-	if err := out.WriteHeader(&tar.Header{
-		Name: "dictionary",
-		Mode: 0600,
-		Size: int64(len(dict)),
-	}); err != nil {
-		panic(err)
-	}
-	if _, err := out.Write(dict); err != nil {
-		panic(err)
-	}
-
-	cdict, err := gozstd.NewCDict(dict)
-	if err != nil {
-		panic(err)
-	}
-
-	index := geograph.IndexContents{
-		ID:           make([]int32, 0, 1<<23),
-		SubjectLng:   make([]float32, 0, 1<<23),
-		SubjectLat:   make([]float32, 0, 1<<23),
-		ViewpointLng: make([]float32, 0, 1<<23),
-		ViewpointLat: make([]float32, 0, 1<<23),
-	}
-
-	i = 0
-	scanRows(*onlyWriteSample, func(meta metaData, row []byte) {
-		compressed := gozstd.CompressDict(nil, row, cdict)
-
-		if err := out.WriteHeader(&tar.Header{
-			Name: geograph.IDToPath(meta.id),
-			Mode: 0600,
-			Size: int64(len(compressed)),
-		}); err != nil {
+		if _, err := outW.Write([]byte("\n")); err != nil {
 			panic(err)
 		}
 
-		if _, err := out.Write(compressed); err != nil {
-			panic(err)
+		if i == 0 {
+			log.Println("Wrote first row")
+			_ = outW.Flush()
 		}
-
-		index.ID = append(index.ID, meta.id)
-		index.SubjectLng = append(index.SubjectLng, float32(meta.subjectLng))
-		index.SubjectLat = append(index.SubjectLat, float32(meta.subjectLat))
-		index.ViewpointLng = append(index.ViewpointLng, float32(meta.viewpointLng))
-		index.ViewpointLat = append(index.ViewpointLat, float32(meta.viewpointLat))
 
 		i++
 		if i%100_000 == 0 {
-			fmt.Println("Wrote", i)
+			log.Println("Wrote", i)
 		}
 	})
 
-	log.Println("Writing index")
-
-	encodedIndex := geograph.EncodeIndex(index)
-
-	if err := out.WriteHeader(&tar.Header{
-		Name: "index",
-		Mode: 0600,
-		Size: int64(len(encodedIndex)),
-	}); err != nil {
-		panic(err)
-	}
-	if _, err := out.Write(encodedIndex); err != nil {
-		panic(err)
-	}
-
 	// Finalize
 
-	if err := out.Close(); err != nil {
+	if err := outW.Close(); err != nil {
 		panic(err)
 	}
-	log.Println("Exported to", *outPath)
+	if err := outF.Close(); err != nil {
+		panic(err)
+	}
+	log.Println("All done")
 }
 
-type metaData struct {
-	id                         int32
-	subjectLng, subjectLat     float64
-	viewpointLng, viewpointLat float64
+type tagJSON struct {
+	Prefix string `json:"prefix"`
+	Tag    string `json:"tag"`
 }
 
-func scanRows(sampleOnly bool, cb func(meta metaData, row []byte)) {
+func scanRows(cb func(row []byte)) {
 	osGBToWGS84, err := proj.NewCRSToCRS("epsg:27700", "epsg:4326", nil)
 	if err != nil {
 		panic(err)
@@ -165,11 +98,19 @@ func scanRows(sampleOnly bool, cb func(meta metaData, row []byte)) {
 	}
 
 	rows, err := srcDb.Query(`
-SELECT *
+SELECT gridimage_base.*,
+       gridimage_geo.*,
+       gridimage_size.*,
+       gridimage_text.*,
+       json_arrayagg(json_object('prefix', prefix, 'tag', tag)) AS tags
 FROM gridimage_base
          LEFT JOIN gridimage_geo on gridimage_base.gridimage_id = gridimage_geo.gridimage_id
          LEFT JOIN gridimage_size on gridimage_base.gridimage_id = gridimage_size.gridimage_id
-         LEFT JOIN gridimage_text on gridimage_base.gridimage_id = gridimage_text.gridimage_id`)
+         LEFT JOIN gridimage_text on gridimage_base.gridimage_id = gridimage_text.gridimage_id
+         LEFT JOIN gridimage_tag on gridimage_base.gridimage_id = gridimage_tag.gridimage_id
+         LEFT JOIN tag on tag.tag_id = gridimage_tag.tag_id
+GROUP BY gridimage_base.gridimage_id
+	`)
 	if err != nil {
 		panic(err)
 	}
@@ -180,16 +121,10 @@ FROM gridimage_base
 		panic(err)
 	}
 
-	rng := rand.New(rand.NewSource(0))
-
 	count := 0
 	for rows.Next() {
 		if err := rows.Err(); err != nil {
 			panic(err)
-		}
-
-		if sampleOnly && rng.Intn(1000) != 0 {
-			continue
 		}
 
 		scanArgs := make([]any, len(cols))
@@ -201,6 +136,10 @@ FROM gridimage_base
 				scanArgs[i] = new(sql.NullFloat64)
 			case "VARCHAR", "ENUM", "TEXT", "DATE":
 				scanArgs[i] = new(sql.NullString)
+			case "JSON":
+				scanArgs[i] = new(json.RawMessage)
+			default:
+				panic("unhandled column type: " + col.DatabaseTypeName())
 			}
 		}
 
@@ -246,15 +185,21 @@ FROM gridimage_base
 						row[k] = nil
 					}
 				}
+			} else if z, ok := r.(*json.RawMessage); ok {
+				var tags []tagJSON
+				if err := json.Unmarshal(*z, &tags); err != nil {
+					panic(err)
+				}
+
+				if len(tags) == 1 && tags[0].Tag == "" {
+					empty := json.RawMessage("[]")
+					row[k] = &empty
+				} else {
+					row[k] = z
+				}
 			} else {
 				panic("unimplemented type")
 			}
-		}
-
-		meta := metaData{
-			id:         int32(*row["gridimage_id"].(*int64)),
-			subjectLng: *row["wgs84_long"].(*float64),
-			subjectLat: *row["wgs84_lat"].(*float64),
 		}
 
 		viewpointE := *row["viewpoint_eastings"].(*int64)
@@ -282,9 +227,6 @@ FROM gridimage_base
 
 			row["viewpoint_wgs84_long"] = lng
 			row["viewpoint_wgs84_lat"] = lat
-
-			meta.viewpointLng = lng
-			meta.viewpointLat = lat
 		}
 
 		for _, col := range []string{"x", "y"} {
@@ -296,7 +238,7 @@ FROM gridimage_base
 			panic(err)
 		}
 
-		cb(meta, rowJSON)
+		cb(rowJSON)
 
 		count++
 	}

@@ -22,7 +22,7 @@ func TestIndex(t *testing.T) {
 	//  9 |                                 9
 	// 10 |                                     10
 
-	subject := loadIndex(IndexContents{
+	subject := loadIndex(indexContents{
 		ID:           []int32{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
 		SubjectLng:   []float32{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
 		SubjectLat:   []float32{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
@@ -127,7 +127,7 @@ func TestIndex(t *testing.T) {
 }
 
 func TestIndexIgnoresZero(t *testing.T) {
-	subject := loadIndex(IndexContents{
+	subject := loadIndex(indexContents{
 		ID:           []int32{1, 2, 3},
 		SubjectLng:   []float32{0, 0.001, 0},
 		SubjectLat:   []float32{0, 0.001, 1},

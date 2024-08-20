@@ -12,7 +12,7 @@ import (
 )
 
 func main() {
-	metaDir := geograph.GetEnvString("META_DIR")
+	metaFile := geograph.GetEnvString("META_FILE")
 
 	// Commands
 
@@ -30,7 +30,12 @@ func main() {
 
 	flag.Parse()
 
-	store := geograph.Open(metaDir)
+	store := geograph.Open(metaFile)
+	defer func() {
+		if err := store.Close(); err != nil {
+			panic(err)
+		}
+	}()
 
 	if *getFlag != "" {
 		id, err := strconv.ParseInt(*getFlag, 10, 32)

@@ -21,11 +21,20 @@ type inMemoryIndex struct {
 
 type indexPage struct {
 	items      []int32
+	itemPoints [][2]float32
 	hasNext    bool
 	nextCursor int
 }
 
-func loadIndex(contents IndexContents) *inMemoryIndex {
+type indexContents struct {
+	ID           []int32
+	SubjectLng   []float32
+	SubjectLat   []float32
+	ViewpointLng []float32
+	ViewpointLat []float32
+}
+
+func loadIndex(contents indexContents) *inMemoryIndex {
 	sanityCheckIndex(contents)
 
 	var subject indexRTree
@@ -51,6 +60,7 @@ func loadIndex(contents IndexContents) *inMemoryIndex {
 func (d *inMemoryIndex) within(min, max [2]float32, index IndexType, maxItems, cursor int) (indexPage, error) {
 	i := 0
 	ids := make([]int32, 0, maxItems)
+	points := make([][2]float32, 0, maxItems)
 	hasMore := false
 	d.of(index).Search(min, max, func(point, _ [2]float32, id int32) bool {
 		// Skip up to cursor
@@ -66,15 +76,18 @@ func (d *inMemoryIndex) within(min, max [2]float32, index IndexType, maxItems, c
 		}
 
 		ids = append(ids, id)
+		points = append(points, point)
+
 		i++
 		return true
 	})
-	return indexPage{hasNext: hasMore, nextCursor: i, items: ids}, nil
+	return indexPage{hasNext: hasMore, nextCursor: i, items: ids, itemPoints: points}, nil
 }
 
 func (d *inMemoryIndex) near(target [2]float32, index IndexType, maxItems, cursor int) (indexPage, error) {
 	i := 0
 	ids := make([]int32, 0, maxItems)
+	points := make([][2]float32, 0, maxItems)
 	hasMore := false
 	d.of(index).Nearby(
 		rtree.BoxDist[float32, int32](target, target, nil),
@@ -92,11 +105,13 @@ func (d *inMemoryIndex) near(target [2]float32, index IndexType, maxItems, curso
 			}
 
 			ids = append(ids, id)
+			points = append(points, point)
+
 			i++
 			return true
 		},
 	)
-	return indexPage{hasNext: hasMore, nextCursor: i, items: ids}, nil
+	return indexPage{hasNext: hasMore, nextCursor: i, items: ids, itemPoints: points}, nil
 
 }
 
@@ -111,7 +126,7 @@ func (d *inMemoryIndex) of(ty IndexType) *indexRTree {
 	}
 }
 
-func sanityCheckIndex(index IndexContents) {
+func sanityCheckIndex(index indexContents) {
 	size := len(index.ID)
 	if size == 0 {
 		panic("empty index")

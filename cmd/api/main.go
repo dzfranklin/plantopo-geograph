@@ -6,13 +6,14 @@ import (
 	"fmt"
 	geograph "github.com/dzfranklin/plantopo-geograph"
 	"github.com/tidwall/sjson"
-	"log"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 var serverHost string
@@ -22,10 +23,15 @@ var store *geograph.Store
 func main() {
 	addr := "0.0.0.0:8080"
 	imageSecret = []byte(geograph.GetEnvString("IMAGE_SECRET"))
-	metaDir := geograph.GetEnvString("META_DIR")
+	metaFile := geograph.GetEnvString("META_FILE")
 	serverHost = geograph.GetEnvString("HOST")
 
-	store = geograph.Open(metaDir)
+	store = geograph.Open(metaFile)
+	defer func() {
+		if err := store.Close(); err != nil {
+			slog.Error("error closing store", "error", err)
+		}
+	}()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /status", func(w http.ResponseWriter, r *http.Request) {
@@ -35,9 +41,25 @@ func main() {
 	mux.HandleFunc("GET /v1/within", handleGetWithin)
 	mux.HandleFunc("GET /v1/near", handleGetNear)
 
-	slog.Info(fmt.Sprintf("Listening on %s", addr))
-	if err := http.ListenAndServe(addr, applyCORS(mux)); err != nil {
-		log.Fatal(err)
+	shutdownSig := make(chan os.Signal, 1)
+	signal.Notify(shutdownSig, syscall.SIGINT, syscall.SIGTERM)
+
+	srv := &http.Server{
+		Addr:    addr,
+		Handler: applyCORS(mux),
+	}
+
+	go func() {
+		slog.Info(fmt.Sprintf("Listening on %s", addr))
+		if err := srv.ListenAndServe(); err != nil {
+			slog.Error("error listening", "error", err)
+		}
+	}()
+
+	sig := <-shutdownSig
+	slog.Info(fmt.Sprintf("Received %s", sig))
+	if err := srv.Close(); err != nil {
+		slog.Error("error closing", "error", err)
 	}
 }
 
@@ -52,7 +74,7 @@ func handleGetByID(w http.ResponseWriter, r *http.Request) {
 	forBatchProcessing := getReqOptBool(r, "for_batch_processing")
 
 	meta, err := store.Get(int32(id))
-	if errors.Is(err, os.ErrNotExist) {
+	if errors.Is(err, geograph.ErrNotFound) {
 		respondErr(w, http.StatusNotFound)
 		return
 	} else if err != nil {

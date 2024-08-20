@@ -7,6 +7,6 @@ RUN go mod download
 
 COPY . .
 
-RUN GOOS=linux go build ./cmd/api
+RUN go build ./cmd/api
 
 ENTRYPOINT ["/app/api"]
