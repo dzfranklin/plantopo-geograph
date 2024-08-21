@@ -278,7 +278,10 @@ func applyCORS(next http.Handler) http.Handler {
 		origin := r.Header.Get("Origin")
 		if origin == "" ||
 			strings.HasSuffix(origin, "://plantopo.com") ||
-			strings.HasSuffix(origin, ".plantopo.com") {
+			strings.HasSuffix(origin, ".plantopo.com") ||
+			strings.HasSuffix(origin, "://localhost") ||
+			strings.HasPrefix(origin, "http://localhost:") ||
+			strings.HasPrefix(origin, "https://localhost:") {
 
 			w.Header().Set("Access-Control-Allow-Methods", "GET")
 			w.Header().Set("Access-Control-Allow-Origin", origin)
